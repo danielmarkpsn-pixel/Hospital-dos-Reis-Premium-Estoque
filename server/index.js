@@ -223,6 +223,6 @@ app.get('/api/export',auth,roles('admin','estoque'),(req,res)=>{
  res.setHeader('Content-Type','text/csv; charset=utf-8');
  res.setHeader('Content-Disposition','attachment; filename="estoque-hospital-dos-reis.csv"');
  const esc=v=>'"'+String(v??'').replace(/"/g,'""')+'"';
- res.send('\\ufeff'+['Código;Material;Categoria;Unidade;Estoque mínimo;Saldo;Localização',...products.map(p=>[p.code,p.name,p.category,p.unit,p.min_stock,p.stock,p.location].map(esc).join(';'))].join('\\r\\n'));
+ res.send('\ufeff'+['Código;Material;Categoria;Unidade;Estoque mínimo;Saldo;Localização',...products.map(p=>[p.code,p.name,p.category,p.unit,p.min_stock,p.stock,p.location].map(esc).join(';'))].join('\r\n'));
 });
 app.listen(PORT,HOST,()=>console.log(`Estoque disponível na porta ${PORT}`));
