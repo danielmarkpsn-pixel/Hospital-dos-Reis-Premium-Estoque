@@ -46,10 +46,14 @@ CREATE TABLE IF NOT EXISTS movements (
  user_id INTEGER REFERENCES users(id), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 `);
-const adminExists = db.prepare('SELECT id FROM users WHERE username=?').get('admin');
-if (!adminExists) {
+const adminUser = db.prepare('SELECT id, password_hash FROM users WHERE username=?').get('admin');
+if (!adminUser) {
   db.prepare('INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,?)')
-    .run('admin', 'Administrador', bcrypt.hashSync('Trocar@123', 10), 'admin');
+    .run('admin', 'Administrador', bcrypt.hashSync('admin', 10), 'admin');
+} else if (bcrypt.compareSync('Trocar@123', adminUser.password_hash)) {
+  // Migração única do usuário padrão antigo; não sobrescreve senhas já alteradas.
+  db.prepare('UPDATE users SET password_hash=? WHERE id=?')
+    .run(bcrypt.hashSync('admin', 10), adminUser.id);
 }
 
 app.use(express.json({ limit: '1mb' }));
