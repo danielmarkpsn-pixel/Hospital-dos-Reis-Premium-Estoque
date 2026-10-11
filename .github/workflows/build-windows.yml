@@ -8,6 +8,7 @@ on:
       - 'electron/**'
       - 'server/**'
       - 'public/**'
+      - 'assets/**'
       - '.github/workflows/build-windows.yml'
 jobs:
   build:
@@ -21,6 +22,11 @@ jobs:
           node-version: 20
       - name: Instalar dependências
         run: npm install
+      - name: Gerar ícone ICO válido a partir do PNG da clínica
+        shell: pwsh
+        run: |
+          npm install --no-save png-to-ico
+          node -e "const fs=require('fs'); const pngToIco=require('png-to-ico'); pngToIco('assets/hospital-dos-reis-premium.png').then(buf=>fs.writeFileSync('assets/hospital-dos-reis-premium.ico',buf)).catch(err=>{console.error(err);process.exit(1)})"
       - name: Compilar instalador Windows
         run: npm run dist
       - name: Publicar instalador como artefato
