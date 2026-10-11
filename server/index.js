@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const Database = require('better-sqlite3');
@@ -14,7 +15,8 @@ fs.mkdirSync(dataDir, { recursive: true });
 const db = new Database(path.join(dataDir, 'hospital-estoque.db'));
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
-const SECRET = process.env.JWT_SECRET || 'troque-esta-chave-secreta-antes-de-usar-em-producao';
+let SECRET = process.env.JWT_SECRET;
+if (!SECRET) { const secretFile=path.join(dataDir,'.jwt-secret'); if(fs.existsSync(secretFile)) SECRET=fs.readFileSync(secretFile,'utf8').trim(); if(!SECRET){SECRET=crypto.randomBytes(48).toString('hex');fs.writeFileSync(secretFile,SECRET,{mode:0o600});} }
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
@@ -46,18 +48,21 @@ CREATE TABLE IF NOT EXISTS movements (
  user_id INTEGER REFERENCES users(id), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 `);
+const ensureColumn=(table,column,definition)=>{const cols=db.prepare('PRAGMA table_info('+table+')').all();if(!cols.some(c=>c.name===column))db.exec('ALTER TABLE '+table+' ADD COLUMN '+column+' '+definition)};
+ensureColumn('products','barcode','TEXT');ensureColumn('products','unit_cost','REAL NOT NULL DEFAULT 0');ensureColumn('products','supplier_id','INTEGER');
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode) WHERE barcode IS NOT NULL AND barcode <> '';
+CREATE TABLE IF NOT EXISTS suppliers(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,cnpj TEXT DEFAULT '',contact TEXT DEFAULT '',phone TEXT DEFAULT '',email TEXT DEFAULT '',address TEXT DEFAULT '',notes TEXT DEFAULT '',active INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,username TEXT,user_name TEXT,action TEXT NOT NULL,entity TEXT NOT NULL,details TEXT DEFAULT '',ip_address TEXT DEFAULT '',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);`);
 const adminUser = db.prepare('SELECT id, password_hash FROM users WHERE username=?').get('admin');
 if (!adminUser) {
   db.prepare('INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,?)')
     .run('admin', 'Administrador', bcrypt.hashSync('admin', 10), 'admin');
-} else if (bcrypt.compareSync('Trocar@123', adminUser.password_hash)) {
-  // Migração única do usuário padrão antigo; não sobrescreve senhas já alteradas.
-  db.prepare('UPDATE users SET password_hash=? WHERE id=?')
-    .run(bcrypt.hashSync('admin', 10), adminUser.id);
-}
+} // Senhas de contas existentes nunca são alteradas automaticamente.
 
 app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
+app.use('/api',(req,res,next)=>{res.on('finish',()=>{if(!req.user||!['POST','PUT','PATCH','DELETE'].includes(req.method)||res.statusCode>=400)return;try{const b=req.body&&typeof req.body==='object'?{...req.body}:{};for(const k of ['password','password_hash','token','authorization'])delete b[k];db.prepare('INSERT INTO audit_logs(user_id,username,user_name,action,entity,details,ip_address) VALUES(?,?,?,?,?,?,?)').run(req.user.id,req.user.username,req.user.name,req.method,req.path.split('/')[2]||'sistema',JSON.stringify({path:req.path,method:req.method,status:res.statusCode,fields:Object.keys(b)}),String(req.headers['x-forwarded-for']||req.socket.remoteAddress||'').slice(0,100))}catch(e){console.error('Auditoria:',e.message)}});next()});
 app.get('/api/health', (req,res)=>res.json({ok:true, app:'Hospital dos Reis Premium Estoque'}));
 
 function auth(req,res,next) {
@@ -114,9 +119,11 @@ app.post('/api/login',(req,res)=>{
   res.json({token,user:{id:user.id,username:user.username,name:user.name,role:user.role}});
 });
 app.get('/api/me',auth,(req,res)=>res.json({user:req.user}));
+app.post('/api/change-password',auth,(req,res)=>{const b=req.body||{};const user=db.prepare('SELECT id,password_hash FROM users WHERE id=? AND active=1').get(req.user.id);if(!user||!bcrypt.compareSync(String(b.current_password||''),user.password_hash))return res.status(400).json({error:'A senha atual está incorreta.'});if(String(b.new_password||'').length<10)return res.status(400).json({error:'A nova senha deve ter pelo menos 10 caracteres.'});if(String(b.new_password)===String(b.current_password))return res.status(400).json({error:'Escolha uma senha diferente da atual.'});db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(bcrypt.hashSync(String(b.new_password),12),req.user.id);res.json({ok:true})});
+
 
 app.get('/api/dashboard',auth,(req,res)=>{
- const products=db.prepare(`SELECT p.id,p.name,p.code,p.min_stock,
+ const products=db.prepare(`SELECT p.id,p.name,p.code,p.min_stock,p.unit_cost,
    COALESCE(SUM(l.quantity),0) stock,
    SUM(CASE WHEN l.expiry_date IS NOT NULL AND l.expiry_date < date('now') AND l.quantity>0 THEN l.quantity ELSE 0 END) expired,
    SUM(CASE WHEN l.expiry_date BETWEEN date('now') AND date('now','+60 day') AND l.quantity>0 THEN l.quantity ELSE 0 END) expiring
@@ -124,7 +131,8 @@ app.get('/api/dashboard',auth,(req,res)=>{
  const recent=db.prepare(`SELECT m.*,p.name product_name,u.name user_name,s.surgery_code
    FROM movements m JOIN products p ON p.id=m.product_id LEFT JOIN users u ON u.id=m.user_id
    LEFT JOIN surgeries s ON s.id=m.surgery_id ORDER BY m.id DESC LIMIT 8`).all();
- res.json({products:products.length,low:products.filter(p=>p.stock<=p.min_stock).length,
+ const monthly=db.prepare("SELECT COALESCE(SUM(quantity),0) q FROM movements WHERE type IN ('saida','perda') AND created_at>=date('now','start of month')").get().q;
+ res.json({products:products.length,inventoryValue:products.reduce((sum,p)=>sum+(Number(p.stock)||0)*(Number(p.unit_cost)||0),0),monthlyConsumption:monthly,low:products.filter(p=>p.stock<=p.min_stock).length,
    expired:products.filter(p=>p.expired>0).length,expiring:products.filter(p=>p.expiring>0).length,
    recent,lowItems:products.filter(p=>p.stock<=p.min_stock).slice(0,8)});
 });
@@ -139,16 +147,16 @@ app.post('/api/products',auth,roles('admin','estoque'),(req,res)=>{
  const b=req.body||{};
  if(!String(b.name||'').trim()) return res.status(400).json({error:'Informe o nome do material.'});
  try {
-  const r=db.prepare('INSERT INTO products(code,name,category,unit,min_stock,location) VALUES(?,?,?,?,?,?)')
-   .run(b.code||null,String(b.name).trim(),b.category||'Material cirúrgico',b.unit||'un',Math.max(0,Number(b.min_stock)||0),b.location||'');
+  const r=db.prepare('INSERT INTO products(code,name,category,unit,min_stock,location,barcode,unit_cost,supplier_id) VALUES(?,?,?,?,?,?,?,?,?)')
+   .run(b.code||null,String(b.name).trim(),b.category||'Material cirúrgico',b.unit||'un',Math.max(0,Number(b.min_stock)||0),b.location||'',String(b.barcode||'').trim()||null,Math.max(0,Number(b.unit_cost)||0),b.supplier_id?Number(b.supplier_id):null);
   res.json({id:r.lastInsertRowid});
  } catch(e){res.status(400).json({error:e.message.includes('UNIQUE')?'Este código já está cadastrado.':e.message});}
 });
 app.put('/api/products/:id',auth,roles('admin','estoque'),(req,res)=>{
  const b=req.body||{};
  try {
-  const r=db.prepare('UPDATE products SET code=?,name=?,category=?,unit=?,min_stock=?,location=? WHERE id=?')
-   .run(b.code||null,String(b.name||'').trim(),b.category||'Material cirúrgico',b.unit||'un',Math.max(0,Number(b.min_stock)||0),b.location||'',Number(req.params.id));
+  const r=db.prepare('UPDATE products SET code=?,name=?,category=?,unit=?,min_stock=?,location=?,barcode=?,unit_cost=?,supplier_id=? WHERE id=?')
+   .run(b.code||null,String(b.name||'').trim(),b.category||'Material cirúrgico',b.unit||'un',Math.max(0,Number(b.min_stock)||0),b.location||'',String(b.barcode||'').trim()||null,Math.max(0,Number(b.unit_cost)||0),b.supplier_id?Number(b.supplier_id):null,Number(req.params.id));
   if(!r.changes) return res.status(404).json({error:'Material não encontrado.'});
   res.json({ok:true});
  } catch(e){res.status(400).json({error:e.message.includes('UNIQUE')?'Este código já está cadastrado.':e.message});}
@@ -225,4 +233,18 @@ app.get('/api/export',auth,roles('admin','estoque'),(req,res)=>{
  const esc=v=>'"'+String(v??'').replace(/"/g,'""')+'"';
  res.send('\ufeff'+['Código;Material;Categoria;Unidade;Estoque mínimo;Saldo;Localização',...products.map(p=>[p.code,p.name,p.category,p.unit,p.min_stock,p.stock,p.location].map(esc).join(';'))].join('\r\n'));
 });
-app.listen(PORT,HOST,()=>console.log(`Estoque disponível na porta ${PORT}`));
+
+app.get('/api/suppliers',auth,roles('admin','estoque','consulta'),(req,res)=>res.json(db.prepare('SELECT s.*,COUNT(p.id) product_count FROM suppliers s LEFT JOIN products p ON p.supplier_id=s.id AND p.active=1 WHERE s.active=1 GROUP BY s.id ORDER BY s.name').all()));
+app.post('/api/suppliers',auth,roles('admin','estoque'),(req,res)=>{const b=req.body||{};if(!String(b.name||'').trim())return res.status(400).json({error:'Informe o nome do fornecedor.'});try{const r=db.prepare('INSERT INTO suppliers(name,cnpj,contact,phone,email,address,notes) VALUES(?,?,?,?,?,?,?)').run(String(b.name).trim(),String(b.cnpj||'').trim(),String(b.contact||'').trim(),String(b.phone||'').trim(),String(b.email||'').trim(),String(b.address||'').trim(),String(b.notes||'').trim());res.json({id:r.lastInsertRowid})}catch(e){res.status(400).json({error:e.message})}});
+app.put('/api/suppliers/:id',auth,roles('admin','estoque'),(req,res)=>{const b=req.body||{};if(!String(b.name||'').trim())return res.status(400).json({error:'Informe o nome do fornecedor.'});const r=db.prepare('UPDATE suppliers SET name=?,cnpj=?,contact=?,phone=?,email=?,address=?,notes=? WHERE id=? AND active=1').run(String(b.name).trim(),String(b.cnpj||'').trim(),String(b.contact||'').trim(),String(b.phone||'').trim(),String(b.email||'').trim(),String(b.address||'').trim(),String(b.notes||'').trim(),Number(req.params.id));if(!r.changes)return res.status(404).json({error:'Fornecedor não encontrado.'});res.json({ok:true})});
+app.get('/api/audit',auth,roles('admin'),(req,res)=>{const b=req.query||{},w=[],a=[];if(b.from){w.push('date(created_at)>=date(?)');a.push(b.from)}if(b.to){w.push('date(created_at)<=date(?)');a.push(b.to)}if(b.user){w.push('(username LIKE ? OR user_name LIKE ?)');a.push('%'+b.user+'%','%'+b.user+'%')}res.json(db.prepare('SELECT * FROM audit_logs '+(w.length?'WHERE '+w.join(' AND '):'')+' ORDER BY id DESC LIMIT 2000').all(...a))});
+app.get('/api/reports/advanced',auth,roles('admin','estoque','consulta'),(req,res)=>{const b=req.query||{},w=[],a=[];if(b.from){w.push('date(m.created_at)>=date(?)');a.push(b.from)}if(b.to){w.push('date(m.created_at)<=date(?)');a.push(b.to)}if(b.product_id){w.push('m.product_id=?');a.push(Number(b.product_id))}if(b.user_id){w.push('m.user_id=?');a.push(Number(b.user_id))}if(b.type){w.push('m.type=?');a.push(b.type)}res.json(db.prepare('SELECT m.id,m.created_at,m.type,m.quantity,m.reason,p.name product_name,p.unit,u.name user_name,s.surgery_code,l.lot_code,l.expiry_date FROM movements m JOIN products p ON p.id=m.product_id LEFT JOIN users u ON u.id=m.user_id LEFT JOIN surgeries s ON s.id=m.surgery_id LEFT JOIN lots l ON l.id=m.lot_id '+(w.length?'WHERE '+w.join(' AND '):'')+' ORDER BY m.id DESC LIMIT 5000').all(...a))});
+
+
+const backupDir=path.join(dataDir,'backups');fs.mkdirSync(backupDir,{recursive:true});
+async function createBackup(){const stamp=new Date().toISOString().replace(/[:.]/g,'-');const dest=path.join(backupDir,'hospital-estoque-'+stamp+'.db');await db.backup(dest);const list=fs.readdirSync(backupDir).filter(n=>n.endsWith('.db')).map(name=>({name,time:fs.statSync(path.join(backupDir,name)).mtimeMs})).sort((a,b)=>b.time-a.time);for(const old of list.slice(14)){try{fs.unlinkSync(path.join(backupDir,old.name))}catch{}}return dest}
+app.get('/api/backups',auth,roles('admin'),(req,res)=>res.json(fs.readdirSync(backupDir).filter(name=>name.endsWith('.db')).map(name=>({name,created_at:fs.statSync(path.join(backupDir,name)).mtime.toISOString(),size:fs.statSync(path.join(backupDir,name)).size})).sort((a,b)=>b.created_at.localeCompare(a.created_at))));
+app.post('/api/backups',auth,roles('admin'),async(req,res)=>{try{const file=await createBackup();res.json({ok:true,name:path.basename(file),created_at:fs.statSync(file).mtime.toISOString()})}catch(e){res.status(500).json({error:'Não foi possível criar backup: '+e.message})}});
+app.get('/api/backups/:name/download',auth,roles('admin'),(req,res)=>{const name=path.basename(req.params.name);if(name!==req.params.name||!name.startsWith('hospital-estoque-')||!name.endsWith('.db'))return res.status(400).json({error:'Nome de backup inválido.'});const file=path.join(backupDir,name);if(!fs.existsSync(file))return res.status(404).json({error:'Backup não encontrado.'});res.download(file,name)});
+
+app.listen(PORT,HOST,()=>{console.log(`Estoque disponível na porta ${PORT}`);createBackup().catch(e=>console.error('Backup inicial:',e.message));setInterval(()=>createBackup().catch(e=>console.error('Backup diário:',e.message)),24*60*60*1000);});
