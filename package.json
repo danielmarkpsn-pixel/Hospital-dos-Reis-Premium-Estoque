@@ -6,7 +6,7 @@
   "scripts": {
     "start": "electron .",
     "server": "node server/index.js",
-    "dist": "electron-builder --win nsis"
+    "dist": "electron-builder --win nsis --publish never"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -21,10 +21,25 @@
   "build": {
     "appId": "br.com.hospitaldosreispremium.estoque",
     "productName": "Hospital dos Reis Premium - Estoque",
-    "directories": { "output": "dist" },
-    "files": ["electron/**/*", "server/**/*", "public/**/*", "package.json"],
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "server/**/*",
+      "public/**/*",
+      "package.json"
+    ],
     "asar": true,
-    "win": { "target": ["nsis"] },
-    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true }
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
   }
 }
