@@ -1,8 +1,17 @@
-# Hospital dos Reis Premium — Controle de Estoque v1.0
+# Hospital dos Reis Premium — Controle de Estoque v2.0
 
 Aplicativo desktop Windows com interface preto/grafite para materiais cirúrgicos, lotes, validade, movimentações, consumo por cirurgia e usuários com permissões.
 
-## Recursos da versão 1.0
+## Recursos da versão 2.0
+- Painel executivo com estoque crítico, vencimentos, consumo mensal e valor estimado por custo unitário.
+- Leitura de código de barras por scanner USB ou digitação; o código pode ser associado ao cadastro do material.
+- Cadastro de fornecedores com CNPJ, contatos, endereço e associação aos materiais.
+- Auditoria das operações autenticadas, com usuário, horário, módulo, método e origem; valores de senha e tokens não são armazenados no log.
+- Relatórios avançados com filtros por período, material, usuário e tipo de movimentação.
+- Backup automático na inicialização e a cada 24 horas, retenção de até 14 cópias e download manual.
+- Alteração da senha pelo usuário autenticado e chave de sessão JWT gerada localmente e persistida no diretório de dados.
+
+## Recursos herdados da versão 1.0
 - Painel de estoque baixo, lotes vencidos e próximos do vencimento.
 - Cadastro e edição de materiais.
 - Entradas, saídas, perdas e ajustes de estoque.
@@ -14,9 +23,9 @@ Aplicativo desktop Windows com interface preto/grafite para materiais cirúrgico
 
 ## Primeiro acesso
 - Usuário: `admin`
-- Senha inicial: `Trocar@123`
+- Senha inicial em bancos novos: `admin`
 
-**Altere a senha padrão antes de cadastrar dados reais.** A interface de gestão de usuários da primeira versão cria usuários, mas a troca da senha do usuário administrador deve ser implementada antes de uso clínico operacional.
+**Altere a senha inicial imediatamente** na tela Segurança e backup. Bancos já existentes mantêm as senhas atuais.
 
 ## Como publicar no GitHub pelo navegador
 1. Crie um repositório no GitHub, por exemplo `Hospital-dos-Reis-Premium-Estoque`.
@@ -35,7 +44,7 @@ Aplicativo desktop Windows com interface preto/grafite para materiais cirúrgico
 - Nos computadores clientes, acesse `http://IP-DO-SERVIDOR:4317` no navegador. A tela **Rede local** mostra o endereço detectado.
 - Autorize o aplicativo/porta TCP 4317 no firewall somente para a rede privada da clínica.
 - O IP do servidor deve ser reservado no roteador.
-- Não publique a porta na internet. Esta versão não implementa HTTPS, MFA, trilha de auditoria inviolável nem rotina automática de backup; use apenas em ambiente de teste até essas medidas serem avaliadas e implementadas.
+- Não publique a porta na internet. A V2.0 inclui auditoria de operações e backups automáticos, mas ainda não implementa HTTPS, MFA ou restauração guiada. Use apenas após validar segurança, integridade e recuperação dos dados.
 
 ## Build local opcional
 Requer Node.js LTS instalado:
@@ -48,8 +57,8 @@ O build do instalador:
 npm run dist
 ```
 
-## Limitações importantes da versão 1.0
-- Ainda não há fluxo de alteração de senha, desativação de usuário pela interface, backup automático ou restauração guiada.
+## Limitações importantes da versão 2.0
+- A restauração guiada pela interface ainda não está habilitada; faça a recuperação com o serviço interrompido e valide a cópia antes de reabrir o sistema.
 - O CSV de estoque exporta o saldo atual. O relatório de movimentações permite imprimir/salvar em PDF pelo navegador.
 - A baixa por consumo usa lotes com validade mais próxima quando não se escolhe lote. A equipe deve conferir o lote físico antes de confirmar.
 - O sistema não substitui procedimentos de qualidade, conferência de lote, rastreabilidade regulatória, controles de esterilidade ou registros clínicos. Não registre nome, CPF, prontuário ou outros dados identificáveis de pacientes nesta versão.
