@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const Database = require('better-sqlite3');
@@ -14,7 +15,8 @@ fs.mkdirSync(dataDir, { recursive: true });
 const db = new Database(path.join(dataDir, 'hospital-estoque.db'));
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
-const SECRET = process.env.JWT_SECRET || 'troque-esta-chave-secreta-antes-de-usar-em-producao';
+let SECRET = process.env.JWT_SECRET;
+if (!SECRET) { const secretFile=path.join(dataDir,'.jwt-secret'); if(fs.existsSync(secretFile)) SECRET=fs.readFileSync(secretFile,'utf8').trim(); if(!SECRET){SECRET=crypto.randomBytes(48).toString('hex');fs.writeFileSync(secretFile,SECRET,{mode:0o600});} }
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
@@ -121,6 +123,8 @@ app.post('/api/login',(req,res)=>{
   res.json({token,user:{id:user.id,username:user.username,name:user.name,role:user.role}});
 });
 app.get('/api/me',auth,(req,res)=>res.json({user:req.user}));
+app.post('/api/change-password',auth,(req,res)=>{const b=req.body||{};const user=db.prepare('SELECT id,password_hash FROM users WHERE id=? AND active=1').get(req.user.id);if(!user||!bcrypt.compareSync(String(b.current_password||''),user.password_hash))return res.status(400).json({error:'A senha atual está incorreta.'});if(String(b.new_password||'').length<10)return res.status(400).json({error:'A nova senha deve ter pelo menos 10 caracteres.'});if(String(b.new_password)===String(b.current_password))return res.status(400).json({error:'Escolha uma senha diferente da atual.'});db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(bcrypt.hashSync(String(b.new_password),12),req.user.id);res.json({ok:true})});
+
 
 app.get('/api/dashboard',auth,(req,res)=>{
  const products=db.prepare(`SELECT p.id,p.name,p.code,p.min_stock,p.unit_cost,
