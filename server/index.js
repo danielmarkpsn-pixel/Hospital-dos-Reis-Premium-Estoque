@@ -123,7 +123,7 @@ app.post('/api/login',(req,res)=>{
 app.get('/api/me',auth,(req,res)=>res.json({user:req.user}));
 
 app.get('/api/dashboard',auth,(req,res)=>{
- const products=db.prepare(`SELECT p.id,p.name,p.code,p.min_stock,
+ const products=db.prepare(`SELECT p.id,p.name,p.code,p.min_stock,p.unit_cost,
    COALESCE(SUM(l.quantity),0) stock,
    SUM(CASE WHEN l.expiry_date IS NOT NULL AND l.expiry_date < date('now') AND l.quantity>0 THEN l.quantity ELSE 0 END) expired,
    SUM(CASE WHEN l.expiry_date BETWEEN date('now') AND date('now','+60 day') AND l.quantity>0 THEN l.quantity ELSE 0 END) expiring
@@ -131,7 +131,8 @@ app.get('/api/dashboard',auth,(req,res)=>{
  const recent=db.prepare(`SELECT m.*,p.name product_name,u.name user_name,s.surgery_code
    FROM movements m JOIN products p ON p.id=m.product_id LEFT JOIN users u ON u.id=m.user_id
    LEFT JOIN surgeries s ON s.id=m.surgery_id ORDER BY m.id DESC LIMIT 8`).all();
- res.json({products:products.length,low:products.filter(p=>p.stock<=p.min_stock).length,
+ const monthly=db.prepare("SELECT COALESCE(SUM(quantity),0) q FROM movements WHERE type IN ('saida','perda') AND created_at>=date('now','start of month')").get().q;
+ res.json({products:products.length,inventoryValue:products.reduce((sum,p)=>sum+(Number(p.stock)||0)*(Number(p.unit_cost)||0),0),monthlyConsumption:monthly,low:products.filter(p=>p.stock<=p.min_stock).length,
    expired:products.filter(p=>p.expired>0).length,expiring:products.filter(p=>p.expiring>0).length,
    recent,lowItems:products.filter(p=>p.stock<=p.min_stock).slice(0,8)});
 });
