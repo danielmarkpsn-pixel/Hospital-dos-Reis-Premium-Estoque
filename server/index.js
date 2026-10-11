@@ -58,11 +58,7 @@ const adminUser = db.prepare('SELECT id, password_hash FROM users WHERE username
 if (!adminUser) {
   db.prepare('INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,?)')
     .run('admin', 'Administrador', bcrypt.hashSync('admin', 10), 'admin');
-} else if (bcrypt.compareSync('Trocar@123', adminUser.password_hash)) {
-  // Migração única do usuário padrão antigo; não sobrescreve senhas já alteradas.
-  db.prepare('UPDATE users SET password_hash=? WHERE id=?')
-    .run(bcrypt.hashSync('admin', 10), adminUser.id);
-}
+} // Senhas de contas existentes nunca são alteradas automaticamente.
 
 app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
