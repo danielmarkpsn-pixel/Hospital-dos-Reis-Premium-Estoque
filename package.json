@@ -25,6 +25,7 @@
       "output": "dist"
     },
     "files": [
+      "assets/**/*",
       "electron/**/*",
       "server/**/*",
       "public/**/*",
@@ -32,7 +33,7 @@
     ],
     "asar": true,
     "win": {
-      "icon": "public/hospital-dos-reis-premium.ico",
+      "icon": "assets/hospital-dos-reis-premium.ico",
       "target": [
         "nsis"
       ]
