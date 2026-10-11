@@ -71,6 +71,7 @@ async function createWindow() {
   }
   win = new BrowserWindow({
     width: 1440, height: 900, minWidth: 1050, minHeight: 700,
+    icon: path.join(app.getAppPath(), 'assets', 'hospital-dos-reis-premium.ico'),
     backgroundColor: '#111214',
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true }
   });
