@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#111214"><title>Hospital dos Reis Premium | Estoque</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="loginScreen" class="login-wrap">
+ <div class="login-card"><div class="brand-mark">HR<span>+</span></div><p class="eyebrow">GESTÃO DE MATERIAIS</p><h1>Hospital dos Reis <em>Premium</em></h1><p class="muted">Controle de estoque cirúrgico</p>
+ <form id="loginForm"><label>Usuário<input name="username" value="admin" autocomplete="username" required></label><label>Senha<input name="password" type="password" placeholder="Digite sua senha" autocomplete="current-password" required></label><button class="primary wide">Entrar no sistema</button><p id="loginError" class="error"></p></form>
+ <p class="hint">Primeiro acesso: admin / Trocar@123<br>Altere a senha padrão antes do uso real.</p></div>
+</div>
+<div id="app" class="app hidden">
+ <aside class="sidebar"><div class="side-brand"><div class="brand-mark small">HR<span>+</span></div><div><strong>HOSPITAL DOS REIS</strong><small>PREMIUM · ESTOQUE</small></div></div>
+ <div class="nav-label">GESTÃO</div><nav id="nav">
+ <button class="nav-item active" data-page="dashboard">▦ <span>Visão geral</span></button>
+ <button class="nav-item" data-page="products">▤ <span>Materiais</span></button>
+ <button class="nav-item" data-page="lots">◷ <span>Lotes e validade</span></button>
+ <button class="nav-item" data-page="movements">⇄ <span>Movimentações</span></button>
+ <button class="nav-item" data-page="surgeries">✚ <span>Consumo por cirurgia</span></button>
+ <button class="nav-item" data-page="reports">▥ <span>Relatórios</span></button>
+ <button class="nav-item admin-only" data-page="users">♙ <span>Usuários</span></button>
+ <button class="nav-item admin-only" data-page="network">⌘ <span>Rede local</span></button>
+ </nav><div class="side-bottom"><div class="user-mini"><div class="avatar" id="avatar">A</div><div><strong id="userName">Administrador</strong><small id="userRole">Administrador</small></div></div><button id="logout" class="logout">↪ Sair do sistema</button></div></aside>
+ <main class="main"><header class="topbar"><div><p class="eyebrow">HOSPITAL DOS REIS PREMIUM</p><h2 id="pageTitle">Visão geral</h2></div><div class="top-right"><span class="status-dot"></span><span>Estoque conectado</span><span class="top-date" id="today"></span></div></header>
+ <section id="content" class="content"></section>
+ <footer>Hospital dos Reis Premium <span>•</span> Controle de Estoque v1.0</footer></main>
+</div>
+<div id="modalRoot"></div><div id="toast" class="toast"></div>
+<script src="/app.js"></script>
+</body></html>

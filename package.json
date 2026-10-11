@@ -1,0 +1,30 @@
+{
+  "name": "hospital-dos-reis-premium-estoque",
+  "version": "1.0.0",
+  "description": "Controle de estoque e consumo cirúrgico - Hospital dos Reis Premium",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "server": "node server/index.js",
+    "dist": "electron-builder --win nsis"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.7.0",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2"
+  },
+  "devDependencies": {
+    "electron": "^34.0.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "br.com.hospitaldosreispremium.estoque",
+    "productName": "Hospital dos Reis Premium - Estoque",
+    "directories": { "output": "dist" },
+    "files": ["electron/**/*", "server/**/*", "public/**/*", "package.json"],
+    "asar": true,
+    "win": { "target": ["nsis"] },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true }
+  }
+}

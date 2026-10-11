@@ -1,0 +1,224 @@
+const express = require('express');
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const Database = require('better-sqlite3');
+
+const app = express();
+const PORT = Number(process.env.PORT || 4317);
+const HOST = process.env.HOST || '0.0.0.0';
+const dataDir = process.env.APP_DATA_DIR || path.join(__dirname, '..', 'data');
+fs.mkdirSync(dataDir, { recursive: true });
+const db = new Database(path.join(dataDir, 'hospital-estoque.db'));
+db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
+const SECRET = process.env.JWT_SECRET || 'troque-esta-chave-secreta-antes-de-usar-em-producao';
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS users (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL,
+ name TEXT NOT NULL, password_hash TEXT NOT NULL,
+ role TEXT NOT NULL CHECK(role IN ('admin','estoque','consulta')),
+ active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS products (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT UNIQUE, name TEXT NOT NULL,
+ category TEXT NOT NULL DEFAULT 'Material cirúrgico', unit TEXT NOT NULL DEFAULT 'un',
+ min_stock REAL NOT NULL DEFAULT 0, location TEXT DEFAULT '', active INTEGER NOT NULL DEFAULT 1,
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS lots (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER NOT NULL REFERENCES products(id),
+ lot_code TEXT NOT NULL DEFAULT '', expiry_date TEXT, quantity REAL NOT NULL DEFAULT 0,
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS surgeries (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, surgery_code TEXT UNIQUE NOT NULL,
+ procedure_name TEXT NOT NULL, surgery_date TEXT NOT NULL, notes TEXT DEFAULT '',
+ created_by INTEGER REFERENCES users(id), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS movements (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER NOT NULL REFERENCES products(id),
+ lot_id INTEGER REFERENCES lots(id), type TEXT NOT NULL CHECK(type IN ('entrada','saida','ajuste','perda')),
+ quantity REAL NOT NULL, reason TEXT NOT NULL, surgery_id INTEGER REFERENCES surgeries(id),
+ user_id INTEGER REFERENCES users(id), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+`);
+const adminExists = db.prepare('SELECT id FROM users WHERE username=?').get('admin');
+if (!adminExists) {
+  db.prepare('INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,?)')
+    .run('admin', 'Administrador', bcrypt.hashSync('Trocar@123', 10), 'admin');
+}
+
+app.use(express.json({ limit: '1mb' }));
+app.use(express.static(path.join(__dirname, '..', 'public')));
+app.get('/api/health', (req,res)=>res.json({ok:true, app:'Hospital dos Reis Premium Estoque'}));
+
+function auth(req,res,next) {
+  const token = (req.headers.authorization || '').replace(/^Bearer\s+/i,'');
+  try { req.user = jwt.verify(token, SECRET); next(); }
+  catch { res.status(401).json({error:'Sessão inválida. Entre novamente.'}); }
+}
+function roles(...allowed) {
+  return (req,res,next) => allowed.includes(req.user.role) ? next() : res.status(403).json({error:'Seu usuário não tem permissão para esta ação.'});
+}
+function logMovement({product_id,lot_id,type,quantity,reason,surgery_id,user_id}) {
+  const tx = db.transaction(() => {
+    const current = lot_id ? db.prepare('SELECT quantity FROM lots WHERE id=? AND product_id=?').get(lot_id, product_id) : null;
+    if (type === 'saida' || type === 'perda') {
+      if (lot_id && (!current || current.quantity < quantity)) throw new Error('Quantidade insuficiente no lote selecionado.');
+      if (!lot_id) {
+        const total = db.prepare('SELECT COALESCE(SUM(quantity),0) q FROM lots WHERE product_id=?').get(product_id).q;
+        if (total < quantity) throw new Error('Estoque insuficiente.');
+      }
+    }
+    if (type === 'entrada') {
+      if (lot_id) db.prepare('UPDATE lots SET quantity=quantity+? WHERE id=?').run(quantity,lot_id);
+      else {
+        const lot = db.prepare('INSERT INTO lots(product_id,lot_code,quantity) VALUES(?,?,?)').run(product_id,'SEM-LOTE',quantity);
+        lot_id = lot.lastInsertRowid;
+      }
+    } else if (type === 'saida' || type === 'perda') {
+      if (lot_id) db.prepare('UPDATE lots SET quantity=quantity-? WHERE id=?').run(quantity,lot_id);
+      else {
+        let remaining = quantity;
+        const lots = db.prepare('SELECT id,quantity FROM lots WHERE product_id=? AND quantity>0 ORDER BY COALESCE(expiry_date,"9999-12-31"),id').all(product_id);
+        for (const lot of lots) {
+          const take = Math.min(remaining, lot.quantity);
+          db.prepare('UPDATE lots SET quantity=quantity-? WHERE id=?').run(take,lot.id);
+          remaining -= take;
+          if (remaining <= 0) break;
+        }
+      }
+    } else if (type === 'ajuste') {
+      if (!lot_id) throw new Error('Selecione o lote para ajustar.');
+      db.prepare('UPDATE lots SET quantity=? WHERE id=?').run(quantity,lot_id);
+    }
+    db.prepare(`INSERT INTO movements(product_id,lot_id,type,quantity,reason,surgery_id,user_id)
+      VALUES(?,?,?,?,?,?,?)`).run(product_id,lot_id || null,type,quantity,reason,surgery_id || null,user_id);
+  });
+  tx();
+}
+
+app.post('/api/login',(req,res)=>{
+  const {username,password}=req.body||{};
+  const user=db.prepare('SELECT * FROM users WHERE username=? AND active=1').get(String(username||'').trim());
+  if(!user || !bcrypt.compareSync(String(password||''),user.password_hash)) return res.status(401).json({error:'Usuário ou senha incorretos.'});
+  const token=jwt.sign({id:user.id,username:user.username,name:user.name,role:user.role},SECRET,{expiresIn:'12h'});
+  res.json({token,user:{id:user.id,username:user.username,name:user.name,role:user.role}});
+});
+app.get('/api/me',auth,(req,res)=>res.json({user:req.user}));
+
+app.get('/api/dashboard',auth,(req,res)=>{
+ const products=db.prepare(`SELECT p.id,p.name,p.code,p.min_stock,
+   COALESCE(SUM(l.quantity),0) stock,
+   SUM(CASE WHEN l.expiry_date IS NOT NULL AND l.expiry_date < date('now') AND l.quantity>0 THEN l.quantity ELSE 0 END) expired,
+   SUM(CASE WHEN l.expiry_date BETWEEN date('now') AND date('now','+60 day') AND l.quantity>0 THEN l.quantity ELSE 0 END) expiring
+   FROM products p LEFT JOIN lots l ON l.product_id=p.id WHERE p.active=1 GROUP BY p.id`).all();
+ const recent=db.prepare(`SELECT m.*,p.name product_name,u.name user_name,s.surgery_code
+   FROM movements m JOIN products p ON p.id=m.product_id LEFT JOIN users u ON u.id=m.user_id
+   LEFT JOIN surgeries s ON s.id=m.surgery_id ORDER BY m.id DESC LIMIT 8`).all();
+ res.json({products:products.length,low:products.filter(p=>p.stock<=p.min_stock).length,
+   expired:products.filter(p=>p.expired>0).length,expiring:products.filter(p=>p.expiring>0).length,
+   recent,lowItems:products.filter(p=>p.stock<=p.min_stock).slice(0,8)});
+});
+app.get('/api/products',auth,(req,res)=>{
+ const rows=db.prepare(`SELECT p.*,COALESCE(SUM(l.quantity),0) stock,
+  MIN(CASE WHEN l.quantity>0 AND l.expiry_date IS NOT NULL THEN l.expiry_date END) next_expiry
+  FROM products p LEFT JOIN lots l ON l.product_id=p.id WHERE p.active=1
+  GROUP BY p.id ORDER BY p.name`).all();
+ res.json(rows);
+});
+app.post('/api/products',auth,roles('admin','estoque'),(req,res)=>{
+ const b=req.body||{};
+ if(!String(b.name||'').trim()) return res.status(400).json({error:'Informe o nome do material.'});
+ try {
+  const r=db.prepare('INSERT INTO products(code,name,category,unit,min_stock,location) VALUES(?,?,?,?,?,?)')
+   .run(b.code||null,String(b.name).trim(),b.category||'Material cirúrgico',b.unit||'un',Math.max(0,Number(b.min_stock)||0),b.location||'');
+  res.json({id:r.lastInsertRowid});
+ } catch(e){res.status(400).json({error:e.message.includes('UNIQUE')?'Este código já está cadastrado.':e.message});}
+});
+app.put('/api/products/:id',auth,roles('admin','estoque'),(req,res)=>{
+ const b=req.body||{};
+ try {
+  const r=db.prepare('UPDATE products SET code=?,name=?,category=?,unit=?,min_stock=?,location=? WHERE id=?')
+   .run(b.code||null,String(b.name||'').trim(),b.category||'Material cirúrgico',b.unit||'un',Math.max(0,Number(b.min_stock)||0),b.location||'',Number(req.params.id));
+  if(!r.changes) return res.status(404).json({error:'Material não encontrado.'});
+  res.json({ok:true});
+ } catch(e){res.status(400).json({error:e.message.includes('UNIQUE')?'Este código já está cadastrado.':e.message});}
+});
+app.get('/api/lots',auth,(req,res)=>{
+ const rows=db.prepare(`SELECT l.*,p.name product_name,p.unit FROM lots l JOIN products p ON p.id=l.product_id ORDER BY CASE WHEN l.expiry_date IS NULL THEN 1 ELSE 0 END,l.expiry_date`).all();
+ res.json(rows);
+});
+app.post('/api/movements',auth,roles('admin','estoque'),(req,res)=>{
+ const b=req.body||{}, qty=Number(b.quantity);
+ if(!b.product_id || !Number.isFinite(qty) || qty<=0 || !String(b.reason||'').trim()) return res.status(400).json({error:'Preencha material, quantidade e motivo.'});
+ try {
+  let lotId=b.lot_id?Number(b.lot_id):null;
+  if(b.type==='entrada' && !lotId) {
+    const lot=db.prepare('INSERT INTO lots(product_id,lot_code,expiry_date,quantity) VALUES(?,?,?,0)')
+      .run(Number(b.product_id),String(b.new_lot_code||'SEM-LOTE').trim(),b.expiry_date||null);
+    lotId=lot.lastInsertRowid;
+  }
+  logMovement({product_id:Number(b.product_id),lot_id:lotId,type:b.type,quantity:qty,reason:String(b.reason).trim(),surgery_id:b.surgery_id?Number(b.surgery_id):null,user_id:req.user.id});
+  res.json({ok:true});
+ } catch(e){res.status(400).json({error:e.message});}
+});
+app.get('/api/surgeries',auth,(req,res)=>{
+ res.json(db.prepare(`SELECT s.*,u.name user_name FROM surgeries s LEFT JOIN users u ON u.id=s.created_by ORDER BY surgery_date DESC,id DESC`).all());
+});
+app.post('/api/surgeries',auth,roles('admin','estoque'),(req,res)=>{
+ const b=req.body||{};
+ if(!String(b.surgery_code||'').trim()||!String(b.procedure_name||'').trim()||!b.surgery_date) return res.status(400).json({error:'Preencha código, procedimento e data.'});
+ try {
+  const r=db.prepare('INSERT INTO surgeries(surgery_code,procedure_name,surgery_date,notes,created_by) VALUES(?,?,?,?,?)')
+    .run(String(b.surgery_code).trim(),String(b.procedure_name).trim(),b.surgery_date,String(b.notes||''),req.user.id);
+  res.json({id:r.lastInsertRowid});
+ } catch(e){res.status(400).json({error:e.message.includes('UNIQUE')?'Este código de cirurgia já existe.':e.message});}
+});
+app.post('/api/surgeries/:id/consume',auth,roles('admin','estoque'),(req,res)=>{
+ const items=Array.isArray(req.body.items)?req.body.items:[];
+ if(!items.length) return res.status(400).json({error:'Adicione pelo menos um material.'});
+ try {
+  // Cada baixa usa sua própria transação; evita transações SQLite aninhadas.
+  for(const item of items) {
+    const qty=Number(item.quantity);
+    if(!item.product_id||!Number.isFinite(qty)||qty<=0) throw new Error('Material ou quantidade inválida.');
+    logMovement({product_id:Number(item.product_id),lot_id:item.lot_id?Number(item.lot_id):null,type:'saida',quantity:qty,reason:'Consumo cirúrgico',surgery_id:Number(req.params.id),user_id:req.user.id});
+  }
+  res.json({ok:true});
+ } catch(e){res.status(400).json({error:e.message});}
+});
+app.get('/api/reports/movements',auth,(req,res)=>{
+ const rows=db.prepare(`SELECT m.created_at,m.type,m.quantity,m.reason,p.name product_name,p.unit,u.name user_name,s.surgery_code
+ FROM movements m JOIN products p ON p.id=m.product_id LEFT JOIN users u ON u.id=m.user_id LEFT JOIN surgeries s ON s.id=m.surgery_id
+ ORDER BY m.id DESC LIMIT 1000`).all();
+ res.json(rows);
+});
+app.get('/api/users',auth,roles('admin'),(req,res)=>res.json(db.prepare('SELECT id,username,name,role,active,created_at FROM users ORDER BY name').all()));
+app.post('/api/users',auth,roles('admin'),(req,res)=>{
+ const b=req.body||{};
+ if(!b.username||!b.name||!b.password||String(b.password).length<8||!['admin','estoque','consulta'].includes(b.role)) return res.status(400).json({error:'Informe usuário, nome, senha com 8+ caracteres e perfil válido.'});
+ try {
+  const r=db.prepare('INSERT INTO users(username,name,password_hash,role) VALUES(?,?,?,?)')
+   .run(String(b.username).trim(),String(b.name).trim(),bcrypt.hashSync(String(b.password),10),b.role);
+  res.json({id:r.lastInsertRowid});
+ } catch(e){res.status(400).json({error:e.message.includes('UNIQUE')?'Nome de usuário já existe.':e.message});}
+});
+app.get('/api/network',auth,roles('admin'),(req,res)=>{
+ const addresses=[];
+ for(const [name,items] of Object.entries(os.networkInterfaces())) for(const i of items||[]) if(i.family==='IPv4'&&!i.internal) addresses.push({name,address:i.address});
+ res.json({port:PORT,addresses});
+});
+app.get('/api/export',auth,roles('admin','estoque'),(req,res)=>{
+ const products=db.prepare(`SELECT p.code,p.name,p.category,p.unit,p.min_stock,COALESCE(SUM(l.quantity),0) stock,p.location
+ FROM products p LEFT JOIN lots l ON l.product_id=p.id WHERE p.active=1 GROUP BY p.id ORDER BY p.name`).all();
+ res.setHeader('Content-Type','text/csv; charset=utf-8');
+ res.setHeader('Content-Disposition','attachment; filename="estoque-hospital-dos-reis.csv"');
+ const esc=v=>'"'+String(v??'').replace(/"/g,'""')+'"';
+ res.send('\\ufeff'+['Código;Material;Categoria;Unidade;Estoque mínimo;Saldo;Localização',...products.map(p=>[p.code,p.name,p.category,p.unit,p.min_stock,p.stock,p.location].map(esc).join(';'))].join('\\r\\n'));
+});
+app.listen(PORT,HOST,()=>console.log(`Estoque disponível na porta ${PORT}`));
