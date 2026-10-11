@@ -26,7 +26,7 @@ jobs:
         shell: pwsh
         run: |
           npm install --no-save png-to-ico
-          node -e "const fs=require('fs'); const pngToIco=require('png-to-ico'); pngToIco('assets/hospital-dos-reis-premium.png').then(buf=>fs.writeFileSync('assets/hospital-dos-reis-premium.ico',buf)).catch(err=>{console.error(err);process.exit(1)})"
+          node --input-type=module -e "import fs from 'node:fs'; const mod = await import('png-to-ico'); const pngToIco = mod.default ?? mod.pngToIco ?? mod; if (typeof pngToIco !== 'function') throw new TypeError('Exportação de png-to-ico não é uma função: ' + Object.keys(mod).join(', ')); const buf = await pngToIco('assets/hospital-dos-reis-premium.png'); fs.writeFileSync('assets/hospital-dos-reis-premium.ico', buf); console.log('Ícone ICO gerado com sucesso.');"
       - name: Compilar instalador Windows
         run: npm run dist
       - name: Publicar instalador como artefato
