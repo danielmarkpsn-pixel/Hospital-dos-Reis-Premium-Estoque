@@ -1,4 +1,5 @@
 // Módulos adicionais da versão 2.0 — interface compatível com a V1.
+document.querySelector('[data-page="security"]')?.classList.remove('admin-only');
 titles.barcode='Leitura por código de barras';
 titles.suppliers='Fornecedores';
 titles.audit='Auditoria completa';
@@ -20,7 +21,7 @@ window.renderPage=async function(){
  if(state.page==='surgeries')return surgeriesPage(c);
 };
 window.navigate=async function(page){
- if((page==='audit'||page==='security'||page==='users'||page==='network')&&state.user?.role!=='admin'){toast('Acesso restrito ao administrador.',true);return}
+ if((page==='audit'||page==='users'||page==='network')&&state.user?.role!=='admin'){toast('Acesso restrito ao administrador.',true);return}
  state.page=page;
  document.querySelectorAll('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.page===page));
  $('#pageTitle').textContent=titles[page]||page;
